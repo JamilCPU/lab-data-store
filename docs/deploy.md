@@ -15,12 +15,13 @@ The store runs on the lab Kubernetes cluster in namespace `lab`, deployed by Flu
 
 ```bash
 sudo mkdir -p /data/lab/lab-data-store/postgres /data/lab/lab-data-store/files /srv/lab-data-store/backups
-sudo chown 70:70 /data/lab/lab-data-store/postgres /srv/lab-data-store/backups   # postgres uid
-sudo chmod 700 /srv/lab-data-store/backups                                       # dumps hold all data and role hashes
+sudo chown 70:70 /data/lab/lab-data-store/postgres                               # postgres uid
+sudo chown 70:<pull-user-gid> /srv/lab-data-store/backups                        # group of the user that pulls off-node
+sudo chmod 2750 /srv/lab-data-store/backups                                      # setgid; dumps hold all data and role hashes
 sudo chown 10001:10001 /data/lab/lab-data-store/files                            # ingest-api uid
 ```
 
-`/srv/lab-data-store/backups` should be on a different disk from `/data`, so a failure of the data disk does not take the backups with it. Make it group-readable for the pull user: `sudo chgrp <pull-user-gid> /srv/lab-data-store/backups && sudo chmod 2750 /srv/lab-data-store/backups` (setgid, so new dumps inherit the group; see [backup-restore.md](backup-restore.md)).
+`/srv/lab-data-store/backups` should be on a different disk from `/data`, so a failure of the data disk does not take the backups with it. The directory is setgid `2750` with the pull user's group, so new dumps inherit the group and the off-node pull can `scp` as a normal user (see [backup-restore.md](backup-restore.md)).
 
 ## Create the Secret (once)
 

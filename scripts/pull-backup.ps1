@@ -1,4 +1,4 @@
-# Pull the lab data store backups from the primary node to this machine and keep the newest 4 of each kind.
+# Pull the lab data store backups from the primary node to this machine and keep the newest 14 of each kind (the node keeps 14 days).
 # Needs: LAB_DATA_STORE_SSH = user@host of the primary node (environment variable); key-based ssh/scp access.
 # Optional: LAB_DATA_STORE_BACKUP_DIR overrides the destination (default F:\Backups\lab-data-store).
 # PowerShell 5.1 compatible.
@@ -22,7 +22,7 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-$keep = 4
+$keep = 14
 $patterns = @('lab-*.dump', 'globals-*.sql', 'files-*.tgz')
 foreach ($pattern in $patterns) {
     $files = @(Get-ChildItem -Path $dest -Filter $pattern -File | Sort-Object Name -Descending)
@@ -41,5 +41,6 @@ $lines = foreach ($pattern in $patterns) {
         "$hash  $($_.Name)"
     }
 }
-Set-Content -Path $sumFile -Value $lines -Encoding ASCII
+# LF line endings so sha256sum -c works on the file.
+[IO.File]::WriteAllText($sumFile, (($lines -join "`n") + "`n"))
 Write-Host "wrote $sumFile"
