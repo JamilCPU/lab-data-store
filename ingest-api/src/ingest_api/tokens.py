@@ -16,6 +16,12 @@ class TokenInfo:
     sources: tuple[str, ...]
 
 
+def _commit(conn: psycopg.Connection) -> None:
+    """Make a write durable regardless of the connection's autocommit mode."""
+    if not conn.autocommit:
+        conn.commit()
+
+
 def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
@@ -29,12 +35,12 @@ def create_token(
 ) -> tuple[str, int]:
     """Create a token; the plaintext is returned once and never stored."""
     token = new_token()
-    with conn.transaction():
-        row = conn.execute(
-            "INSERT INTO store.device_tokens (device, sources, token_hash, note) "
-            "VALUES (%s, %s, %s, %s) RETURNING id",
-            (device, sources, hash_token(token), note),
-        ).fetchone()
+    row = conn.execute(
+        "INSERT INTO store.device_tokens (device, sources, token_hash, note) "
+        "VALUES (%s, %s, %s, %s) RETURNING id",
+        (device, sources, hash_token(token), note),
+    ).fetchone()
+    _commit(conn)
     return token, int(row[0])
 
 
@@ -50,17 +56,14 @@ def lookup_token(conn: psycopg.Connection, token: str) -> TokenInfo | None:
 
 
 def revoke_token(conn: psycopg.Connection, token_id: int) -> bool:
-    with conn.transaction():
-        cur = conn.execute(
-            "UPDATE store.device_tokens SET revoked_at = now() "
-            "WHERE id = %s AND revoked_at IS NULL",
-            (token_id,),
-        )
+    cur = conn.execute(
+        "UPDATE store.device_tokens SET revoked_at = now() WHERE id = %s AND revoked_at IS NULL",
+        (token_id,),
+    )
+    _commit(conn)
     return cur.rowcount == 1
 
 
 def touch_token(conn: psycopg.Connection, token_id: int) -> None:
-    with conn.transaction():
-        conn.execute(
-            "UPDATE store.device_tokens SET last_seen_at = now() WHERE id = %s", (token_id,)
-        )
+    conn.execute("UPDATE store.device_tokens SET last_seen_at = now() WHERE id = %s", (token_id,))
+    _commit(conn)

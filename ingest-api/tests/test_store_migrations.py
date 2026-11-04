@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import psycopg
@@ -69,3 +70,30 @@ def test_rerun_grants_on_existing_tables(test_dsn):
     ensure_roles(test_dsn, sources, PASSWORDS)
     with as_role(test_dsn, "usage_reader", PASSWORDS["USAGE_READER_PASSWORD"]) as conn:
         assert conn.execute("SELECT count(*) FROM usage.late").fetchone() == (0,)
+
+
+@pytest.mark.integration
+def test_roles_only_source_gets_no_ingest_access(test_dsn):
+    sources = load_sources(EXAMPLE)
+    ensure_roles(test_dsn, sources, PASSWORDS)
+    with as_role(test_dsn, "bank_owner", PASSWORDS["BANK_OWNER_PASSWORD"]) as conn:
+        conn.execute("CREATE TABLE bank.t (id int)")
+        conn.commit()
+    ensure_roles(test_dsn, sources, PASSWORDS)  # also covers grants on existing tables
+    with as_role(test_dsn, "ingest", PASSWORDS["INGEST_PASSWORD"]) as conn:
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            conn.execute("INSERT INTO bank.t VALUES (1)")
+    with as_role(test_dsn, "bank_reader", PASSWORDS["BANK_READER_PASSWORD"]) as conn:
+        assert conn.execute("SELECT count(*) FROM bank.t").fetchone() == (0,)
+
+
+@pytest.mark.integration
+def test_concurrent_bootstrap_is_serialised(test_dsn):
+    sources = load_sources(EXAMPLE)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(ensure_roles, test_dsn, sources, PASSWORDS) for _ in range(4)]
+        for future in futures:
+            future.result()
+    with psycopg.connect(test_dsn) as conn:
+        rows = conn.execute("SELECT version FROM store.schema_migrations").fetchall()
+        assert rows == [("0001_store",)]

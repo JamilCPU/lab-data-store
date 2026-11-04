@@ -45,3 +45,23 @@ def test_create_lookup_revoke_token(test_dsn):
         assert revoke_token(conn, token_id) is True
         assert revoke_token(conn, token_id) is False
         assert lookup_token(conn, token) is None
+
+
+@pytest.mark.integration
+def test_writes_are_visible_to_other_connections(test_dsn):
+    apply_store_migrations(test_dsn)
+    with psycopg.connect(test_dsn) as conn, psycopg.connect(test_dsn) as other:
+        token, token_id = create_token(conn, "pc1", ["usage"])
+        assert lookup_token(other, token) is not None  # create committed
+        other.commit()
+        # lookup leaves a transaction open on `conn`; touch/revoke must still commit
+        assert lookup_token(conn, token) is not None
+        touch_token(conn, token_id)
+        seen = other.execute(
+            "SELECT last_seen_at FROM store.device_tokens WHERE id = %s", (token_id,)
+        ).fetchone()
+        other.commit()
+        assert seen[0] is not None
+        assert lookup_token(conn, token) is not None
+        assert revoke_token(conn, token_id) is True
+        assert lookup_token(other, token) is None
