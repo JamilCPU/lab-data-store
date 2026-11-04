@@ -25,79 +25,79 @@ A tenant is a data source that keeps its data in the lab data store: usage event
 5. **Files go under `/files/<source>/`** (see below), never in the database as blobs.
 6. **Backups are automatic.** The nightly job dumps the whole database, all roles and the whole files area. Nothing to configure per tenant.
 
-## Worked example: adding a `bank` tenant
+## Worked example: adding a `netlog` tenant
 
 ### 1. Register the source
 
-Add an entry to `sources.yaml`. A roles-only source needs just the schema; this one also accepts ingest:
+Add an entry to `sources.yaml`. A roles-only source needs just the schema (like the existing `bank` and `email`); this one also accepts ingest:
 
 ```yaml
 sources:
-  bank:
-    schema: bank
-    table: transactions
+  netlog:
+    schema: netlog
+    table: flows
     columns:
       device: text
-      booked_at: timestamptz
-      amount_cents: bigint
-      currency: text
-      description: text
-      external_id: text
-    required: [device, booked_at, amount_cents, currency, external_id]
-    conflict_key: [external_id]
+      seen_at: timestamptz
+      bytes_total: bigint
+      proto: text
+      host: text
+      flow_id: text
+    required: [device, seen_at, bytes_total, proto, flow_id]
+    conflict_key: [flow_id]
     on_conflict: update
 ```
 
-Registering the source makes the ingest API create the `bank` schema, the `bank_owner` and `bank_reader` roles and their grants the next time it starts.
+Registering the source makes the ingest API create the `netlog` schema, the `netlog_owner` and `netlog_reader` roles and their grants the next time it starts.
 
 ### 2. Give the roles passwords
 
 The API reads each role's password from `<SOURCE>_OWNER_PASSWORD` and `<SOURCE>_READER_PASSWORD` in its environment, and refuses to start if one is missing. Add both keys to the Secret without printing anything:
 
 ```bash
-scripts/add-source-passwords.sh bank
+scripts/add-source-passwords.sh netlog
 ```
 
-Then add the two matching `secretKeyRef` entries to the `ingest-api` Deployment in lab-gitops and add the new entry to the `ingest-sources` ConfigMap there. Merge; Flux rolls the pod.
+Then add the two matching `secretKeyRef` entries to the `ingest-api` Deployment in lab-gitops and add the new entry to the `ingest-sources` ConfigMap there. Merge. The Deployment change rolls the pod; a ConfigMap-only change does not (the file is mounted with `subPath`), so run `kubectl -n lab rollout restart deploy/ingest-api` after Flux applies it.
 
 ### 3. Create the table as the owner
 
-The tenant's repo carries `migrations/0001_transactions.sql`:
+The tenant's repo carries `migrations/0001_flows.sql`:
 
 ```sql
-CREATE TABLE bank.transactions (
+CREATE TABLE netlog.flows (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     device text NOT NULL,
-    booked_at timestamptz NOT NULL,
-    amount_cents bigint NOT NULL,
-    currency text NOT NULL,
-    description text,
-    external_id text NOT NULL UNIQUE,
+    seen_at timestamptz NOT NULL,
+    bytes_total bigint NOT NULL,
+    proto text NOT NULL,
+    host text,
+    flow_id text NOT NULL UNIQUE,
     received_at timestamptz NOT NULL DEFAULT now()
 );
 ```
 
-Its runner connects as `bank_owner`, creates `bank.schema_migrations` if it is missing, and applies each file once, recording the version. The table must exist before the first ingest.
+Its runner connects as `netlog_owner`, creates `netlog.schema_migrations` if it is missing, and applies each file once, recording the version. The table must exist before the first ingest.
 
 In-cluster connection strings (the password comes from the Secret, never from a file):
 
 ```
-postgresql://bank_owner@postgres.lab.svc.cluster.local:5432/lab
-postgresql://bank_reader@postgres.lab.svc.cluster.local:5432/lab
+postgresql://netlog_owner@postgres.lab.svc.cluster.local:5432/lab
+postgresql://netlog_reader@postgres.lab.svc.cluster.local:5432/lab
 ```
 
-Grants for `bank_reader` and `ingest` are meant to cover tables the owner creates later through default privileges, so no extra `GRANT` should be needed. If a table turns out unreadable, check that it was created by `bank_owner`.
+Grants for `netlog_reader` and `ingest` are meant to cover tables the owner creates later through default privileges, so no extra `GRANT` should be needed. If a table turns out unreadable, check that it was created by `netlog_owner`.
 
 ### 4. Files
 
-Put files a tenant needs to keep (statements, attachments) under `/files/bank/`. The ingest API pod mounts the files area read-write at `/files`; other pods that need it mount the same hostPath. Because the area is on the primary node, the nightly job archives it with the database.
+Put files a tenant needs to keep (captures, exports) under `/files/netlog/`. The ingest API pod mounts the files area read-write at `/files`; other pods that need it mount the same hostPath. Because the area is on the primary node, the nightly job archives it with the database.
 
 ### 5. Reading the data
 
-Viewers and MCP servers connect as `bank_reader`. For example, from a pod in the namespace:
+Viewers and MCP servers connect as `netlog_reader`. For example, from a pod in the namespace:
 
 ```bash
-psql "postgresql://bank_reader@postgres.lab.svc.cluster.local:5432/lab" -c 'SELECT count(*) FROM bank.transactions'
+psql "postgresql://netlog_reader@postgres.lab.svc.cluster.local:5432/lab" -c 'SELECT count(*) FROM netlog.flows'
 ```
 
 ### 6. Sending data from a device
@@ -106,15 +106,15 @@ Mint a token bound to the device and the source (see [deploy.md](deploy.md)), th
 
 ```json
 {
-  "source": "bank",
-  "device": "statement-importer",
+  "source": "netlog",
+  "device": "router-agent",
   "events": [
     {
-      "booked_at": "2026-11-01T09:30:00Z",
-      "amount_cents": -1250,
-      "currency": "EUR",
-      "description": "Coffee",
-      "external_id": "tx-000123"
+      "seen_at": "2026-11-01T09:30:00Z",
+      "bytes_total": 4096,
+      "proto": "tcp",
+      "host": "example.org",
+      "flow_id": "flow-000123"
     }
   ]
 }
@@ -126,6 +126,10 @@ curl -sS --cacert lab-ca.pem -H "Authorization: Bearer $TOKEN" \
 ```
 
 The `device` in the envelope must match the device the token was minted for, and `source` must be one of the token's sources. A column named `device` is filled in by the API from the token. Batches are limited to `MAX_BATCH` events (default 5000) and requests per token to `RATE_LIMIT_PER_MINUTE` (default 120).
+
+### Upgrading a roles-only source to ingest
+
+`bank` and `email` are registered roles-only: their schemas and roles exist and ingest is refused. To let one accept data: (1) have the tenant create its table as `<source>_owner`; (2) add `table`, `columns`, `required` and `conflict_key` to the entry in the `ingest-sources` ConfigMap in lab-gitops and merge; (3) run `kubectl -n lab rollout restart deploy/ingest-api` so the pod re-reads the file; (4) mint a device token for the source (see [deploy.md](deploy.md)). No new passwords are needed.
 
 ## Checklist for a new tenant
 

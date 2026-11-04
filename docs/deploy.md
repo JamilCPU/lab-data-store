@@ -16,6 +16,7 @@ The store runs on the lab Kubernetes cluster in namespace `lab`, deployed by Flu
 ```bash
 sudo mkdir -p /data/lab/lab-data-store/postgres /data/lab/lab-data-store/files /srv/lab-data-store/backups
 sudo chown 70:70 /data/lab/lab-data-store/postgres /srv/lab-data-store/backups   # postgres uid
+sudo chmod 700 /srv/lab-data-store/backups                                       # dumps hold all data and role hashes
 sudo chown 10001:10001 /data/lab/lab-data-store/files                            # ingest-api uid
 ```
 
@@ -62,6 +63,14 @@ To run a backup now: `kubectl -n lab create job --from=cronjob/postgres-backup b
 1. On the primary node, from this repo: `scripts/build-push.sh` and note the printed `TAG=<tag>`.
 2. In lab-gitops, set `newTag` for `registry.lab/lab/ingest-api` in `apps/lab-data-store/kustomization.yaml`.
 3. Merge. The pod is recreated; on start it applies pending store migrations.
+
+## Change the source registry
+
+`ingest-sources` is mounted with `subPath`, so a change that only touches the ConfigMap does not restart the pod. After Flux applies it, run:
+
+```bash
+kubectl -n lab rollout restart deploy/ingest-api
+```
 
 ## Add a tenant
 
