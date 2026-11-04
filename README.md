@@ -34,7 +34,13 @@ A centralized home for personal data in a home lab: one Postgres + TimescaleDB i
 
 ## Quick start
 
-_Filled in by later tasks._
+Ingest API (`ingest-api/`):
+
+```bash
+(cd ingest-api && uv run pytest -q)   # integration tests need TEST_ADMIN_DSN (Postgres+TimescaleDB admin DSN); skipped without it
+docker build ingest-api               # local image build
+scripts/build-push.sh                 # lab build: multi-arch, pushes to the lab registry (run on the primary node)
+```
 
 ### Configuration
 
