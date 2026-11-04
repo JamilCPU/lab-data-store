@@ -42,6 +42,8 @@ docker build ingest-api               # local image build
 scripts/build-push.sh                 # lab build: multi-arch, pushes to the lab registry (run on the primary node)
 ```
 
+Deploy: see [docs/deploy.md](docs/deploy.md) (node directories, Secret, Flux, verification). Adding a data source: [docs/tenants.md](docs/tenants.md).
+
 ### Configuration
 
 _Filled in by later tasks._ See `.env.example` for the variables involved; real values are never committed.
