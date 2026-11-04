@@ -1,0 +1,26 @@
+sources:
+  usage:
+    schema: usage
+    table: events
+    columns:
+      device: text
+      ts_start: timestamptz
+      ts_end: timestamptz
+      kind: text
+      app: text
+      title: text
+      url: text
+      domain: text
+      idle: bool
+      source_bucket: text
+      source_event_id: bigint
+    required: [device, ts_start, ts_end, kind, source_bucket, source_event_id]
+    conflict_key: [device, source_bucket, source_event_id, ts_start]
+    on_conflict: update
+    enum:
+      kind: [window, web, afk]
+  # Roles-only sources: schema and roles are provisioned, ingest is refused.
+  bank:
+    schema: bank
+  email:
+    schema: email
