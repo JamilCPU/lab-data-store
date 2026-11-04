@@ -13,6 +13,10 @@ dependencies = [
     "typer",
 ]
 
+[project.scripts]
+ingest-api = "ingest_api.app:main"
+store-admin = "ingest_api.admin_cli:app"
+
 [dependency-groups]
 dev = ["pytest", "pytest-asyncio", "httpx", "ruff"]
 
