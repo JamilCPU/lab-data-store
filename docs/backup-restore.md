@@ -10,6 +10,8 @@ The CronJob `postgres-backup` runs nightly at 03:00 UTC on the primary node and 
 | `globals-<date>.sql` | `pg_dumpall --globals-only`: roles and their attributes |
 | `files-<date>.tgz` | Tarball of the files area |
 
+The directory is owned by uid 70 with the group of the user that does the off-node pull, mode `2750` (setgid, so new files inherit the group); the job runs with `umask 027`, so files are `640`. One-time setup on the node: `sudo chgrp <pull-user-gid> /srv/lab-data-store/backups && sudo chmod 2750 /srv/lab-data-store/backups`, and for files that already exist `sudo chgrp <pull-user-gid> /srv/lab-data-store/backups/* && sudo chmod 640 /srv/lab-data-store/backups/*`.
+
 The node keeps 14 days; older files are deleted by the job itself. Run one on demand with `kubectl -n lab create job --from=cronjob/postgres-backup backup-manual-1` (delete the job afterwards).
 
 ## Off-node copy
@@ -68,6 +70,6 @@ kubectl -n lab scale deploy/ingest-api --replicas=1
 | `usage.events` | live 3, restored 3 |
 | `store.device_tokens` | live 2, restored 2 |
 | Result | PASS, `pg_restore` exit code 0 |
-| Pulled copy | `F:\Backups\lab-data-store\lab-2026-11-04-1859.dump` has the same SHA-256 as on `<primary-node>`; `pg_restore --list` on it shows 26 table-data entries |
+| Pulled copy | `F:\Backups\lab-data-store\lab-2026-11-04-1903.dump` (taken after the group-readable change) has the same SHA-256 as on `<primary-node>` (`4188753dd7e0a53300d379f74b240d3f76da8d5c86bef3cd993fa8b894d5902f`); `pg_restore --list` on it shows 26 table-data entries |
 
 The seed rows (device `restore-check`, source bucket `restore-check`) were ingested with a throwaway token, revoked straight after. A `FAIL` was also provoked on purpose (`LIVE_EVENTS=99`) to confirm the script reports it.

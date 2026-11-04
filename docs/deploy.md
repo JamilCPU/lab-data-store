@@ -20,7 +20,7 @@ sudo chmod 700 /srv/lab-data-store/backups                                      
 sudo chown 10001:10001 /data/lab/lab-data-store/files                            # ingest-api uid
 ```
 
-`/srv/lab-data-store/backups` should be on a different disk from `/data`, so a failure of the data disk does not take the backups with it.
+`/srv/lab-data-store/backups` should be on a different disk from `/data`, so a failure of the data disk does not take the backups with it. Make it group-readable for the pull user: `sudo chgrp <pull-user-gid> /srv/lab-data-store/backups && sudo chmod 2750 /srv/lab-data-store/backups` (setgid, so new dumps inherit the group; see [backup-restore.md](backup-restore.md)).
 
 ## Create the Secret (once)
 
