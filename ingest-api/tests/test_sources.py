@@ -3,7 +3,12 @@ from pathlib import Path
 
 import pytest
 
-from ingest_api.sources import EventValidationError, load_sources, validate_events
+from ingest_api.sources import (
+    EventValidationError,
+    SourceConfigError,
+    load_sources,
+    validate_events,
+)
 
 EXAMPLE = Path(__file__).parent.parent / "config" / "sources.example.yaml"
 
@@ -89,3 +94,39 @@ def test_validate_does_not_mutate_input(usage):
     event = make_event()
     validate_events(usage, [event])
     assert event["ts_start"] == "2026-01-01T10:00:00Z"
+
+
+def _write(tmp_path, body):
+    path = tmp_path / "sources.yaml"
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+def test_roles_only_source_loads_without_mapping(tmp_path):
+    path = _write(tmp_path, "sources:\n  bank:\n    schema: bank\n")
+    spec = load_sources(path)["bank"]
+    assert spec.schema == "bank"
+    assert spec.table is None
+    assert spec.columns == {}
+    assert spec.ingestable is False
+    assert load_sources(EXAMPLE)["usage"].ingestable is True
+    assert {"bank", "email"} <= set(load_sources(EXAMPLE))
+
+
+def test_conflict_key_must_be_required(tmp_path):
+    body = (
+        "sources:\n  s:\n    schema: s\n    table: t\n"
+        "    columns: {a: text, b: text}\n    required: [a]\n    conflict_key: [a, b]\n"
+    )
+    with pytest.raises(SourceConfigError, match="conflict_key"):
+        load_sources(_write(tmp_path, body))
+
+
+def test_enum_only_on_text_columns(tmp_path):
+    body = (
+        "sources:\n  s:\n    schema: s\n    table: t\n"
+        "    columns: {a: text, n: int}\n    required: [a]\n    conflict_key: [a]\n"
+        "    enum: {n: ['1']}\n"
+    )
+    with pytest.raises(SourceConfigError, match="enum"):
+        load_sources(_write(tmp_path, body))

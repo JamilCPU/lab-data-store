@@ -29,22 +29,26 @@ class EventValidationError(Exception):
 class SourceSpec:
     name: str
     schema: str
-    table: str
-    columns: dict[str, ColumnType]
-    required: tuple[str, ...]
-    conflict_key: tuple[str, ...]
-    on_conflict: Literal["update", "nothing"]
+    table: str | None = None
+    columns: dict[str, ColumnType] = field(default_factory=dict)
+    required: tuple[str, ...] = ()
+    conflict_key: tuple[str, ...] = ()
+    on_conflict: Literal["update", "nothing"] = "update"
     enum: dict[str, tuple[str, ...]] = field(default_factory=dict)
+
+    @property
+    def ingestable(self) -> bool:
+        return self.table is not None
 
 
 class _SourceModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_: str
-    table: str
-    columns: dict[str, ColumnType]
+    table: str | None = None
+    columns: dict[str, ColumnType] = {}
     required: list[str] = []
-    conflict_key: list[str]
+    conflict_key: list[str] = []
     on_conflict: Literal["update", "nothing"] = "update"
     enum: dict[str, list[str]] = {}
 
@@ -69,6 +73,10 @@ def _build_spec(name: str, raw: dict[str, Any]) -> SourceSpec:
         model = _SourceModel.parse(raw)
     except (ValidationError, TypeError) as exc:
         raise SourceConfigError(f"source '{name}': {exc}") from exc
+    if model.table is None:
+        if model.columns or model.required or model.conflict_key or model.enum:
+            raise SourceConfigError(f"source '{name}': ingest mapping requires 'table'")
+        return SourceSpec(name=name, schema=model.schema_)
     for label, names in (
         ("required", model.required),
         ("conflict_key", model.conflict_key),
@@ -79,6 +87,14 @@ def _build_spec(name: str, raw: dict[str, Any]) -> SourceSpec:
             raise SourceConfigError(f"source '{name}': {label} names unknown column(s) {unknown}")
     if not model.conflict_key:
         raise SourceConfigError(f"source '{name}': conflict_key must not be empty")
+    outside = [c for c in model.conflict_key if c not in model.required]
+    if outside:
+        raise SourceConfigError(
+            f"source '{name}': conflict_key column(s) {outside} must also be required"
+        )
+    non_text = [c for c in model.enum if model.columns[c] != "text"]
+    if non_text:
+        raise SourceConfigError(f"source '{name}': enum only allowed on text columns {non_text}")
     return SourceSpec(
         name=name,
         schema=model.schema_,

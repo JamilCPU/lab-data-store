@@ -19,3 +19,8 @@ sources:
     on_conflict: update
     enum:
       kind: [window, web, afk]
+  # Roles-only sources: schema and roles are provisioned, ingest is refused.
+  bank:
+    schema: bank
+  email:
+    schema: email
