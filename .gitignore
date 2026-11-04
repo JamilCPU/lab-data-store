@@ -1,0 +1,12 @@
+.env
+*.token
+token
+*.key
+*.pem
+.venv/
+__pycache__/
+node_modules/
+dist/
+*.db
+state.json
+.superpowers/

@@ -1,0 +1,24 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  ingest-api:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ingest-api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        if: hashFiles('ingest-api/pyproject.toml') != ''
+      - if: hashFiles('ingest-api/pyproject.toml') != ''
+        run: uv sync --locked
+      - if: hashFiles('ingest-api/pyproject.toml') != ''
+        run: uv run ruff check .
+      - if: hashFiles('ingest-api/pyproject.toml') != ''
+        run: uv run pytest -q
+
