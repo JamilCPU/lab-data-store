@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from collections.abc import AsyncIterator
@@ -9,10 +10,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any
 
+import psycopg
 import uvicorn
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
-from psycopg_pool import ConnectionPool
+from psycopg_pool import ConnectionPool, PoolTimeout
 from pydantic import BaseModel
 
 from ingest_api.config import Settings
@@ -23,6 +25,22 @@ from ingest_api.tokens import TokenInfo, lookup_token, touch_token
 from ingest_api.writer import write_events
 
 TOUCH_INTERVAL_SECONDS = 60.0
+logger = logging.getLogger(__name__)
+_UNAVAILABLE = (psycopg.OperationalError, PoolTimeout)
+
+
+def _stamp_device(events: list[dict[str, Any]], device: str) -> list[dict[str, Any]] | None:
+    """Fill a missing per-event device from the token; None if any event names another."""
+    stamped = []
+    for event in events:
+        if not isinstance(event, dict):
+            stamped.append(event)  # rejected later by validation, with its index
+            continue
+        current = event.get("device")
+        if current is not None and current != device:
+            return None
+        stamped.append({**event, "device": device})
+    return stamped
 
 
 class IngestRequest(BaseModel):
@@ -37,8 +55,12 @@ def require_token(
     scheme, _, token = (authorization or "").partition(" ")
     info = None
     if scheme.lower() == "bearer" and token.strip():
-        with request.app.state.pool.connection() as conn:
-            info = lookup_token(conn, token.strip())
+        try:
+            with request.app.state.pool.connection() as conn:
+                info = lookup_token(conn, token.strip())
+        except _UNAVAILABLE as exc:
+            logger.error("token lookup failed: %s", exc)
+            raise HTTPException(status_code=503, detail="database unavailable") from exc
     if info is None:
         raise HTTPException(status_code=401, detail="invalid token")
     return info
@@ -83,6 +105,7 @@ def create_app(settings: Settings) -> FastAPI:
             with request.app.state.pool.connection() as conn:
                 conn.execute("SELECT 1")
         except Exception:
+            logger.exception("readiness check failed")
             return JSONResponse({"ok": False}, status_code=503)
         return JSONResponse({"ok": True})
 
@@ -102,16 +125,30 @@ def create_app(settings: Settings) -> FastAPI:
             or body.device != token.device
         ):
             raise HTTPException(status_code=403, detail="forbidden")
+        raw_events = body.events
+        if "device" in spec.columns:
+            stamped = _stamp_device(raw_events, token.device)
+            if stamped is None:
+                raise HTTPException(status_code=403, detail="forbidden")
+            raw_events = stamped
         try:
-            events = validate_events(spec, body.events)
+            events = validate_events(spec, raw_events)
         except EventValidationError as exc:
             return JSONResponse(
                 {"index": exc.index, "field": exc.field, "message": exc.message},
                 status_code=422,
             )
-        with app.state.pool.connection() as conn:
-            result = write_events(conn, spec, events)
-        _touch_throttled(app, token.id)
+        try:
+            with app.state.pool.connection() as conn:
+                result = write_events(conn, spec, events)
+            _touch_throttled(app, token.id)
+        except _UNAVAILABLE as exc:
+            logger.error("database unavailable during ingest: %s", exc)
+            return JSONResponse({"detail": "database unavailable"}, status_code=503)
+        except psycopg.Error as exc:
+            logger.error("database rejected batch (sqlstate %s): %s", exc.sqlstate, exc)
+            message = f"database rejected the batch (sqlstate {exc.sqlstate})"
+            return JSONResponse({"index": None, "field": None, "message": message}, status_code=422)
         return {
             "accepted": len(events),
             "inserted": result.inserted,

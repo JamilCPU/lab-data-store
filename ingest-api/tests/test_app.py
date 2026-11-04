@@ -88,6 +88,26 @@ async def test_ingest_rejects_other_device(make_client, usage_db):
     assert count(usage_db) == 0
 
 
+async def test_ingest_rejects_event_for_other_device(make_client, usage_db):
+    client = await make_client()
+    token, _ = mint(usage_db)
+    events = [ev(1), ev(2, device="pc2")]
+    resp = await client.post("/v1/ingest", json=body(events), headers=bearer(token))
+    assert resp.status_code == 403
+    assert count(usage_db) == 0
+
+
+async def test_ingest_stamps_missing_event_device(make_client, usage_db):
+    client = await make_client()
+    token, _ = mint(usage_db)
+    event = ev(1)
+    del event["device"]
+    resp = await client.post("/v1/ingest", json=body([event]), headers=bearer(token))
+    assert resp.status_code == 200
+    with psycopg.connect(usage_db) as conn:
+        assert conn.execute("SELECT device FROM usage.events").fetchall() == [("pc1",)]
+
+
 async def test_ingest_rejects_unknown_source(make_client, usage_db):
     client = await make_client()
     token, _ = mint(usage_db)
@@ -101,6 +121,7 @@ async def test_ingest_rejects_roles_only_source(make_client, usage_db):
     token, _ = mint(usage_db, sources=("bank",))
     resp = await client.post("/v1/ingest", json=body([ev()], source="bank"), headers=bearer(token))
     assert resp.status_code == 403
+    assert count(usage_db) == 0
 
 
 async def test_ingest_rejects_source_not_granted_to_token(make_client, usage_db):
@@ -173,3 +194,15 @@ async def test_readyz(make_client):
     assert (await client.get("/readyz")).status_code == 200
     client._transport.app.state.pool.close()
     assert (await client.get("/readyz")).status_code == 503
+
+
+async def test_ingest_database_rejection_is_422_without_values(make_client, usage_db):
+    client = await make_client()
+    token, _ = mint(usage_db)
+    resp = await client.post("/v1/ingest", json=body([ev(2**70)]), headers=bearer(token))
+    assert resp.status_code == 422
+    detail = resp.json()
+    assert detail["index"] is None and detail["field"] is None
+    assert "sqlstate" in detail["message"]
+    assert str(2**70) not in detail["message"]
+    assert count(usage_db) == 0

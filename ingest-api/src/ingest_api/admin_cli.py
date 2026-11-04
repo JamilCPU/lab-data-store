@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Annotated
 
 import psycopg
 import typer
 
 from ingest_api.config import Settings
+from ingest_api.sources import load_sources
 from ingest_api.store_migrations import apply_store_migrations
 from ingest_api.tokens import create_token, revoke_token
 
@@ -34,6 +36,12 @@ def token_create(
     note: Annotated[str | None, typer.Option(help="Free-text note.")] = None,
 ) -> None:
     """Create a token. Only the plaintext token goes to stdout."""
+    settings = Settings()
+    known = load_sources(Path(settings.sources_file))
+    unknown = [name for name in source if name not in known]
+    if unknown:
+        typer.echo(f"unknown source(s): {', '.join(unknown)}; known: {', '.join(known)}", err=True)
+        raise typer.Exit(code=2)
     with psycopg.connect(_admin_dsn()) as conn:
         token, token_id = create_token(conn, device, source, note)
     typer.echo(f"created token id {token_id} for {device} ({', '.join(source)})", err=True)
