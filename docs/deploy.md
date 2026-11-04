@@ -90,4 +90,4 @@ Copy the file to the device's configuration and delete the local copy. `store-ad
 
 ## Restore
 
-Dumps are in `/srv/lab-data-store/backups`: `lab-<date>.dump` (custom format, restore with `pg_restore`), `globals-<date>.sql` (roles) and `files-<date>.tgz`. Restore the roles first so ownership is preserved, then the database into an empty one.
+Dumps are in `/srv/lab-data-store/backups`: `lab-<date>.dump` (custom format, restore with `pg_restore`), `globals-<date>.sql` (roles) and `files-<date>.tgz`. Restore the roles first so ownership is preserved, then the database into an empty one. Full procedure, TimescaleDB notes and the restore check: [backup-restore.md](backup-restore.md).

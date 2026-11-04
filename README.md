@@ -18,7 +18,7 @@ A centralized home for personal data in a home lab: one Postgres + TimescaleDB i
 
 - **Store**: Postgres with the TimescaleDB extension, run as a StatefulSet on the cluster's primary node (pinned by node label) with data on a hostPath volume. It is the only stateful component; everything else can float between nodes.
 - **Ingest API**: the only entry point for writes. Clients send batches in a generic envelope (`source`, `device`, `events[]`) with a per-device bearer token. Sources are registered by configuration, so adding a tenant does not require code changes in this repo.
-- **Backups**: a nightly `pg_dump` to a second disk on the primary node, plus a weekly pull to another machine so a copy always lives off-node.
+- **Backups**: a nightly `pg_dump` to a second disk on the primary node, plus a weekly pull to another machine so a copy always lives off-node. Restores are proven with `scripts/restore-check.sh`; see [docs/backup-restore.md](docs/backup-restore.md).
 - **Tenant conventions**: one schema per source, with an `owner` role (runs migrations, owned by the tenant's repo) and a `reader` role (read-only, used by viewers and MCP servers). This repo owns the server, roles, backup and shared conventions; tenants own their schema and migrations.
 
 ## Repo layout
