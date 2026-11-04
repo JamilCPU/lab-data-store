@@ -35,9 +35,9 @@ docker run -d --name "$name" -e POSTGRES_PASSWORD=restore "$image" >/dev/null
 # between them to be sure we are talking to the final server.
 ready=0
 for _ in $(seq 1 60); do
-  if docker exec "$name" pg_isready -U postgres -q; then
+  if docker exec "$name" pg_isready -h 127.0.0.1 -U postgres -q; then
     sleep 3
-    if docker exec "$name" pg_isready -U postgres -q; then ready=1; break; fi
+    if docker exec "$name" pg_isready -h 127.0.0.1 -U postgres -q; then ready=1; break; fi
   fi
   sleep 1
 done

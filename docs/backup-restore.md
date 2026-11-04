@@ -16,11 +16,11 @@ The node keeps 14 days; older files are deleted by the job itself. Run one on de
 
 ## Off-node copy
 
-Once a week the GPU PC pulls the directory with `scripts/pull-backup.ps1` into `F:\Backups\lab-data-store` (override with `LAB_DATA_STORE_BACKUP_DIR`), keeps the 4 newest files of each kind and writes `SHA256SUMS.txt`. It reads `LAB_DATA_STORE_SSH` (`user@host` of the primary node) from the environment and needs key-based ssh. `scripts/register-pull-task.ps1` registers the scheduled task `LabDataStore-BackupPull` (Sundays 04:00, current user); it only registers, it does not run the task. To check a pulled file, compare `Get-FileHash` with `sha256sum` on the node, and copy it to the node to run `pg_restore --list` against it.
+Once a week the GPU PC pulls the directory with `scripts/pull-backup.ps1` into `F:\Backups\lab-data-store` (override with `LAB_DATA_STORE_BACKUP_DIR`), keeps the 14 newest files of each kind (mirrors the node's 14-day retention; the job writes one set per night) and writes `SHA256SUMS.txt`. It reads `LAB_DATA_STORE_SSH` (`user@host` of the primary node) from the environment and needs key-based ssh. `scripts/register-pull-task.ps1` registers the scheduled task `LabDataStore-BackupPull` (Sundays 04:00, current user); it only registers, it does not run the task. The task runs only while that user is logged on; `StartWhenAvailable` makes a missed Sunday run catch up at the next logon. To check a pulled file, compare `Get-FileHash` with `sha256sum` on the node, and copy it to the node to run `pg_restore --list` against it.
 
 ## Verify a backup (restore check)
 
-`scripts/restore-check.sh <dump> [globals]` runs on the primary node. It starts a throwaway `timescale/timescaledb:2.17.2-pg17` container, restores the dump into it and compares `usage.events` and `store.device_tokens` row counts with the live database (read from `postgres-0`, or pass `LIVE_EVENTS` / `LIVE_TOKENS`). It prints a table and `PASS` or `FAIL`, exits 0 or 1, and always removes the container.
+`scripts/restore-check.sh <dump> [globals]` runs on the primary node. It starts a throwaway `timescale/timescaledb:2.17.2-pg17` container, restores the dump into it and compares `usage.events` and `store.device_tokens` row counts with the live database (read from `postgres-0`, or pass `LIVE_EVENTS` / `LIVE_TOKENS`). It prints a table and `PASS` or `FAIL`, exits 0 or 1, and always removes the container. The live counts are taken at check time, so an ingest between the dump and the check makes the live count larger and gives a spurious `FAIL`; re-run the dump and the check, or pass `LIVE_*` values taken at dump time.
 
 ```bash
 d=/srv/lab-data-store/backups
@@ -43,7 +43,7 @@ The steps it performs, in order, are also the manual restore procedure:
 
 ## Restore for real into the cluster
 
-This replaces the live data. Do it only after a restore check of the same dump passed.
+This replaces the live data. Do it only after a restore check of the same dump passed. Status: rehearsed only via `restore-check.sh`; not yet executed against the cluster.
 
 ```bash
 kubectl -n lab scale deploy/ingest-api --replicas=0
@@ -56,9 +56,10 @@ kubectl -n lab exec postgres-0 -- pg_restore -U postgres -d lab --no-owner --no-
 kubectl -n lab exec postgres-0 -- psql -U postgres -d lab -c 'SELECT timescaledb_post_restore()'
 kubectl -n lab exec postgres-0 -- rm /tmp/lab.dump /tmp/globals.sql
 kubectl -n lab scale deploy/ingest-api --replicas=1
+kubectl -n lab rollout restart deploy/ingest-api
 ```
 
-`--no-owner` means objects are owned by `postgres`; if tenant owner roles must own their schemas again, restore without `--no-owner` after the globals step has recreated the roles. Restore the files area with `tar xzf files-<date>.tgz -C /data/lab/lab-data-store/files` on the node. Afterwards check `/readyz` and the row counts.
+`--no-owner --no-privileges` drops the `ingest` and `<source>_reader` grants. ingest-api re-applies schema USAGE, default privileges and grants on existing tables for every registered source each time it starts, so the final `rollout restart` (and a restart of the usage-web deployment once it exists) restores them; do not skip it, or readers see permission errors. `--no-owner` also means objects are owned by `postgres`; if tenant owner roles must own their schemas again, restore without `--no-owner` after the globals step has recreated the roles. Restore the files area with `tar xzf files-<date>.tgz -C /data/lab/lab-data-store/files` on the node. Afterwards check `/readyz` and the row counts.
 
 ## Verification record
 
