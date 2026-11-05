@@ -27,13 +27,13 @@ d=/srv/lab-data-store/backups
 scripts/restore-check.sh $d/lab-<date>-<hhmm>.dump $d/globals-<date>.sql
 ```
 
-The steps it performs, in order, are also the manual restore procedure:
+The steps it performs, in order (the real restore differs only in step 5):
 
 1. Wait for the server to accept connections (the image restarts once during init).
 2. `psql -f globals-<date>.sql`. Errors for roles that already exist or superuser attributes are expected on a fresh server and ignored; this is the only step where failure is tolerated.
 3. `createdb lab`.
 4. `CREATE EXTENSION IF NOT EXISTS timescaledb; SELECT timescaledb_pre_restore();`
-5. `pg_restore -d lab --no-owner --no-privileges <dump>`.
+5. `pg_restore -d lab --no-owner --no-privileges <dump>`. The check only counts rows, so ownership and grants do not matter here; the real restore below keeps them.
 6. `SELECT timescaledb_post_restore();`
 7. Compare counts.
 
@@ -43,34 +43,34 @@ The steps it performs, in order, are also the manual restore procedure:
 
 ## Restore for real into the cluster
 
-This replaces the live data. Do it only after a restore check of the same dump passed. Status: rehearsed only via `restore-check.sh`; not yet executed against the cluster.
+This replaces the live data. Do it only after a restore check of the same dump passed. Status: the dump/restore sequence is rehearsed via `restore-check.sh` (which differs in step 5 only); the full ownership-preserving restore has not been executed against the cluster.
 
 ```bash
-kubectl -n lab scale deploy/ingest-api --replicas=0
+kubectl -n lab scale deploy/ingest-api --replicas=0     # Flux reverts this at its next reconcile; suspend the apps Kustomization first (flux suspend kustomization apps) or be quick
 kubectl -n lab cp /srv/lab-data-store/backups/lab-<date>-<hhmm>.dump postgres-0:/tmp/lab.dump
 kubectl -n lab cp /srv/lab-data-store/backups/globals-<date>.sql postgres-0:/tmp/globals.sql
 kubectl -n lab exec postgres-0 -- psql -U postgres -f /tmp/globals.sql            # existing-role errors are fine
 kubectl -n lab exec postgres-0 -- psql -U postgres -c 'DROP DATABASE IF EXISTS lab WITH (FORCE)' -c 'CREATE DATABASE lab'
 kubectl -n lab exec postgres-0 -- psql -U postgres -d lab -c 'CREATE EXTENSION IF NOT EXISTS timescaledb' -c 'SELECT timescaledb_pre_restore()'
-kubectl -n lab exec postgres-0 -- pg_restore -U postgres -d lab --no-owner --no-privileges /tmp/lab.dump
+kubectl -n lab exec postgres-0 -- pg_restore -U postgres -d lab /tmp/lab.dump
 kubectl -n lab exec postgres-0 -- psql -U postgres -d lab -c 'SELECT timescaledb_post_restore()'
 kubectl -n lab exec postgres-0 -- rm /tmp/lab.dump /tmp/globals.sql
 kubectl -n lab scale deploy/ingest-api --replicas=1
-kubectl -n lab rollout restart deploy/ingest-api
+kubectl -n lab rollout restart deploy/ingest-api        # re-runs the bootstrap initContainer; then: flux resume kustomization apps
 ```
 
-`--no-owner --no-privileges` drops the `ingest` and `<source>_reader` grants. ingest-api re-applies schema USAGE, default privileges and grants on existing tables for every registered source each time it starts, so the final `rollout restart` (and a restart of the usage-web deployment once it exists) restores them; do not skip it, or readers see permission errors. `--no-owner` also means objects are owned by `postgres`; if tenant owner roles must own their schemas again, restore without `--no-owner` after the globals step has recreated the roles. Restore the files area with `tar xzf files-<date>.tgz -C /data/lab/lab-data-store/files` on the node. Afterwards check `/readyz` and the row counts.
+The globals file is applied first so the roles exist; the restore then runs **without** `--no-owner --no-privileges`, so every object keeps its owner (`<source>_owner`, which owns its schema and tables) and every grant (`<source>_reader`, `ingest`) is restored as dumped. The restore is wrapped in `timescaledb_pre_restore()` / `timescaledb_post_restore()` as above. The final `rollout restart` re-runs the `bootstrap` initContainer, which re-applies migrations, role passwords and grants for every registered source (idempotent), and starts the API against the restored database; do not skip it. Restore the files area with `tar xzf files-<date>.tgz -C /data/lab/lab-data-store/files` on the node. Afterwards check `/readyz` and the row counts. `restore-check.sh` keeps `--no-owner --no-privileges` on purpose: it restores into a throwaway server and only counts rows, so ownership is irrelevant and the flag avoids depending on the roles existing.
 
 ## Verification record
 
 | | |
 | --- | --- |
-| Date | 2026-11-04 |
-| Dump | `lab-2026-11-04-1859.dump` (28088 bytes) with `globals-2026-11-04.sql` |
+| Date | 2026-11-05 |
+| Dump | `lab-2026-11-05-0300.dump` (nightly job) with the newest `globals-<date>.sql` |
 | Where | Throwaway container on `<primary-node>`, image `timescale/timescaledb:2.17.2-pg17` |
-| `usage.events` | live 3, restored 3 |
-| `store.device_tokens` | live 2, restored 2 |
+| `usage.events` | live 18, restored 18 |
+| `store.device_tokens` | live 3, restored 3 |
 | Result | PASS, `pg_restore` exit code 0 |
-| Pulled copy | `F:\Backups\lab-data-store\lab-2026-11-04-1903.dump` (taken after the group-readable change) has the same SHA-256 as on `<primary-node>` (`4188753dd7e0a53300d379f74b240d3f76da8d5c86bef3cd993fa8b894d5902f`); `pg_restore --list` on it shows 26 table-data entries |
+| Earlier run | 2026-11-04, `lab-2026-11-04-1913.dump`: events 4/4, tokens 3/3, PASS. A pulled copy had the same SHA-256 as on the node and `pg_restore --list` showed 26 table-data entries |
 
 The seed rows (device `restore-check`, source bucket `restore-check`) were ingested with a throwaway token, revoked straight after. A `FAIL` was also provoked on purpose (`LIVE_EVENTS=99`) to confirm the script reports it.

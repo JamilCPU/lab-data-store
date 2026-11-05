@@ -65,6 +65,8 @@ def write_events(conn: psycopg.Connection, spec: SourceSpec, events: list[dict])
     if spec.table is None:
         raise ValueError(f"source '{spec.name}' has no ingest mapping")
     columns = list(spec.columns)
+    # An explicit null means "not provided": the column DEFAULT applies (NULL if none).
+    events = [{k: v for k, v in e.items() if v is not None} for e in events]
     rows = _dedupe(spec, events)
     inserted = updated = 0
     with conn.transaction():

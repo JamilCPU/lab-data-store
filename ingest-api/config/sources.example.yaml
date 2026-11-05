@@ -24,3 +24,5 @@ sources:
     schema: bank
   email:
     schema: email
+  sms:
+    schema: sms

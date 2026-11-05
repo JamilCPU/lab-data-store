@@ -22,6 +22,8 @@ bank_owner_password="$(gen)"
 bank_reader_password="$(gen)"
 email_owner_password="$(gen)"
 email_reader_password="$(gen)"
+sms_owner_password="$(gen)"
+sms_reader_password="$(gen)"
 
 kubectl -n "$ns" create secret generic "$name" \
   --from-literal=POSTGRES_PASSWORD="$postgres_password" \
@@ -31,6 +33,8 @@ kubectl -n "$ns" create secret generic "$name" \
   --from-literal=BANK_OWNER_PASSWORD="$bank_owner_password" \
   --from-literal=BANK_READER_PASSWORD="$bank_reader_password" \
   --from-literal=EMAIL_OWNER_PASSWORD="$email_owner_password" \
-  --from-literal=EMAIL_READER_PASSWORD="$email_reader_password" >/dev/null
+  --from-literal=EMAIL_READER_PASSWORD="$email_reader_password" \
+  --from-literal=SMS_OWNER_PASSWORD="$sms_owner_password" \
+  --from-literal=SMS_READER_PASSWORD="$sms_reader_password" >/dev/null
 
-echo "created secret $name in namespace $ns (8 keys)"
+echo "created secret $name in namespace $ns (10 keys)"

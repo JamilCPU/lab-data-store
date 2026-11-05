@@ -71,9 +71,19 @@ def _touch_throttled(app: FastAPI, token_id: int) -> None:
     now = time.monotonic()
     if last is not None and now - last < TOUCH_INTERVAL_SECONDS:
         return
-    app.state.last_touch[token_id] = now
     with app.state.pool.connection() as conn:
         touch_token(conn, token_id)
+    app.state.last_touch[token_id] = now
+
+
+def _database_error_response(exc: psycopg.Error) -> JSONResponse:
+    """Data errors (class 22/23) are the client's to fix (422); anything else is ours (503)."""
+    sqlstate = exc.sqlstate or ""
+    logger.error("database error (sqlstate %s): %s", sqlstate or "none", exc.diag.message_primary)
+    if sqlstate[:2] in ("22", "23"):
+        message = f"database rejected the batch (sqlstate {sqlstate})"
+        return JSONResponse({"index": None, "field": None, "message": message}, status_code=422)
+    return JSONResponse({"detail": "database unavailable"}, status_code=503)
 
 
 def create_app(settings: Settings) -> FastAPI:
@@ -81,8 +91,9 @@ def create_app(settings: Settings) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        apply_store_migrations(settings.store_admin_dsn)
-        ensure_roles(settings.store_admin_dsn, sources, os.environ)
+        if settings.store_admin_dsn:  # dev/test convenience; deployments bootstrap separately
+            apply_store_migrations(settings.store_admin_dsn)
+            ensure_roles(settings.store_admin_dsn, sources, os.environ)
         pool = ConnectionPool(settings.store_ingest_dsn, min_size=1, max_size=10, open=True)
         app.state.pool = pool
         try:
@@ -141,14 +152,15 @@ def create_app(settings: Settings) -> FastAPI:
         try:
             with app.state.pool.connection() as conn:
                 result = write_events(conn, spec, events)
-            _touch_throttled(app, token.id)
         except _UNAVAILABLE as exc:
             logger.error("database unavailable during ingest: %s", exc)
             return JSONResponse({"detail": "database unavailable"}, status_code=503)
         except psycopg.Error as exc:
-            logger.error("database rejected batch (sqlstate %s): %s", exc.sqlstate, exc)
-            message = f"database rejected the batch (sqlstate {exc.sqlstate})"
-            return JSONResponse({"index": None, "field": None, "message": message}, status_code=422)
+            return _database_error_response(exc)
+        try:
+            _touch_throttled(app, token.id)
+        except Exception as exc:  # the write is already committed; never fail the response
+            logger.warning("last_seen touch failed after a committed write: %s", type(exc).__name__)
         return {
             "accepted": len(events),
             "inserted": result.inserted,

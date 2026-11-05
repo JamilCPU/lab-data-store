@@ -17,6 +17,8 @@ PASSWORDS = {
     "BANK_READER_PASSWORD": "pw-bank-reader",
     "EMAIL_OWNER_PASSWORD": "pw-email-owner",
     "EMAIL_READER_PASSWORD": "pw-email-reader",
+    "SMS_OWNER_PASSWORD": "pw-" + "sms-owner",
+    "SMS_READER_PASSWORD": "pw-" + "sms-reader",
 }
 
 
@@ -43,20 +45,21 @@ def test_ensure_roles_creates_schema_and_grants(test_dsn):
     ensure_roles(test_dsn, sources, PASSWORDS)  # idempotent
 
     with as_role(test_dsn, "usage_owner", PASSWORDS["USAGE_OWNER_PASSWORD"]) as conn:
-        conn.execute("CREATE TABLE usage.t (id int primary key, v text)")
+        conn.execute("CREATE TABLE usage.events (id int primary key, v text)")
         conn.commit()
+    ensure_roles(test_dsn, sources, PASSWORDS)  # the mapped table now exists
     with as_role(test_dsn, "ingest", PASSWORDS["INGEST_PASSWORD"]) as conn:
-        conn.execute("INSERT INTO usage.t VALUES (1, 'x')")
-        conn.execute("UPDATE usage.t SET v = 'y' WHERE id = 1")
+        conn.execute("INSERT INTO usage.events VALUES (1, 'x')")
+        conn.execute("UPDATE usage.events SET v = 'y' WHERE id = 1")
         conn.commit()
     with as_role(test_dsn, "usage_reader", PASSWORDS["USAGE_READER_PASSWORD"]) as conn:
-        assert conn.execute("SELECT v FROM usage.t").fetchall() == [("y",)]
+        assert conn.execute("SELECT v FROM usage.events").fetchall() == [("y",)]
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
-            conn.execute("INSERT INTO usage.t VALUES (2, 'z')")
+            conn.execute("INSERT INTO usage.events VALUES (2, 'z')")
 
     with psycopg.connect(test_dsn) as conn:
         names = {r[0] for r in conn.execute("SELECT name FROM store.sources")}
-        assert {"usage", "bank", "email"} <= names
+        assert {"usage", "bank", "email", "sms"} <= names
         assert conn.execute("SELECT 1 FROM pg_namespace WHERE nspname = 'bank'").fetchone()
 
 
@@ -97,3 +100,57 @@ def test_concurrent_bootstrap_is_serialised(test_dsn):
     with psycopg.connect(test_dsn) as conn:
         rows = conn.execute("SELECT version FROM store.schema_migrations").fetchall()
         assert rows == [("0001_store",)]
+
+
+@pytest.mark.integration
+def test_ingest_cannot_write_schema_migrations(test_dsn):
+    sources = load_sources(EXAMPLE)
+    ensure_roles(test_dsn, sources, PASSWORDS)
+    with as_role(test_dsn, "usage_owner", PASSWORDS["USAGE_OWNER_PASSWORD"]) as conn:
+        conn.execute("CREATE TABLE usage.events (id int primary key)")
+        conn.execute("CREATE TABLE usage.schema_migrations (version text primary key)")
+        conn.commit()
+    ensure_roles(test_dsn, sources, PASSWORDS)
+    with as_role(test_dsn, "ingest", PASSWORDS["INGEST_PASSWORD"]) as conn:
+        conn.execute("INSERT INTO usage.events VALUES (1)")
+        conn.commit()
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            conn.execute("INSERT INTO usage.schema_migrations VALUES ('x')")
+
+
+@pytest.mark.integration
+def test_ensure_roles_revokes_legacy_broad_ingest_grants(test_dsn):
+    sources = load_sources(EXAMPLE)
+    ensure_roles(test_dsn, sources, PASSWORDS)
+    with as_role(test_dsn, "usage_owner", PASSWORDS["USAGE_OWNER_PASSWORD"]) as conn:
+        conn.execute("CREATE TABLE usage.events (id int primary key)")
+        conn.execute("CREATE TABLE usage.schema_migrations (version text primary key)")
+        conn.execute("GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA usage TO ingest")
+        conn.execute(
+            "ALTER DEFAULT PRIVILEGES IN SCHEMA usage "
+            "GRANT SELECT, INSERT, UPDATE ON TABLES TO ingest"
+        )
+        conn.commit()
+    ensure_roles(test_dsn, sources, PASSWORDS)
+    with as_role(test_dsn, "usage_owner", PASSWORDS["USAGE_OWNER_PASSWORD"]) as conn:
+        conn.execute("CREATE TABLE usage.later (id int)")
+        conn.commit()
+    with as_role(test_dsn, "ingest", PASSWORDS["INGEST_PASSWORD"]) as conn:
+        conn.execute("INSERT INTO usage.events VALUES (1)")
+        conn.commit()
+        for table in ("schema_migrations", "later"):
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                conn.execute(f"SELECT 1 FROM usage.{table}")
+            conn.rollback()
+
+
+@pytest.mark.integration
+def test_ingest_can_manage_device_tokens(test_dsn):
+    ensure_roles(test_dsn, load_sources(EXAMPLE), PASSWORDS)
+    with as_role(test_dsn, "ingest", PASSWORDS["INGEST_PASSWORD"]) as conn:
+        conn.execute(
+            "INSERT INTO store.device_tokens (device, sources, token_hash) "
+            "VALUES ('d', ARRAY['usage'], 'h')"
+        )
+        conn.commit()
+        assert conn.execute("SELECT count(*) FROM store.device_tokens").fetchone() == (1,)

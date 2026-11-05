@@ -206,3 +206,95 @@ async def test_ingest_database_rejection_is_422_without_values(make_client, usag
     assert "sqlstate" in detail["message"]
     assert str(2**70) not in detail["message"]
     assert count(usage_db) == 0
+
+
+async def test_app_starts_without_admin_dsn(make_client, usage_db):
+    client = await make_client(STORE_ADMIN_DSN=None)
+    token, _ = mint(usage_db)
+    resp = await client.post("/v1/ingest", json=body([ev()]), headers=bearer(token))
+    assert resp.status_code == 200
+    assert count(usage_db) == 1
+
+
+async def test_ingest_resend_with_longer_end_updates_one_row(make_client, usage_db):
+    client = await make_client()
+    token, _ = mint(usage_db)
+    await client.post("/v1/ingest", json=body([ev(1, title="a")]), headers=bearer(token))
+    later = "2026-01-01T10:09:00+00:00"
+    resp = await client.post(
+        "/v1/ingest", json=body([ev(1, ts_end=later, title="b")]), headers=bearer(token)
+    )
+    assert resp.json() == {"accepted": 1, "inserted": 0, "updated": 1}
+    assert count(usage_db) == 1
+    with psycopg.connect(usage_db) as conn:
+        title, end = conn.execute("SELECT title, ts_end FROM usage.events").fetchone()
+    assert title == "b" and end.minute == 9
+
+
+async def test_ingest_second_event_missing_ts_start_is_422_with_index(make_client, usage_db):
+    client = await make_client()
+    token, _ = mint(usage_db)
+    bad = ev(2)
+    del bad["ts_start"]
+    resp = await client.post("/v1/ingest", json=body([ev(1), bad]), headers=bearer(token))
+    assert resp.status_code == 422
+    detail = resp.json()
+    assert (detail["index"], detail["field"]) == (1, "ts_start")
+    assert count(usage_db) == 0
+
+
+async def test_ingest_explicit_null_uses_column_default(make_client, usage_db):
+    client = await make_client()
+    token, _ = mint(usage_db)
+    resp = await client.post("/v1/ingest", json=body([ev(1, idle=None)]), headers=bearer(token))
+    assert resp.status_code == 200
+    with psycopg.connect(usage_db) as conn:
+        assert conn.execute("SELECT idle FROM usage.events").fetchone() == (False,)
+
+
+async def test_ingest_constraint_violation_is_422(make_client, usage_db):
+    client = await make_client()
+    token, _ = mint(usage_db)
+    with psycopg.connect(usage_db) as conn:
+        conn.execute("ALTER TABLE usage.events DROP CONSTRAINT events_kind_check")
+        conn.execute("ALTER TABLE usage.events ADD CONSTRAINT k CHECK (kind <> 'afk')")
+        conn.commit()
+    resp = await client.post("/v1/ingest", json=body([ev(1, kind="afk")]), headers=bearer(token))
+    assert resp.status_code == 422
+    assert "sqlstate 23514" in resp.json()["message"]
+
+
+async def test_ingest_server_side_database_error_is_503(make_client, usage_db):
+    client = await make_client()
+    token, _ = mint(usage_db)
+    with psycopg.connect(usage_db) as conn:
+        conn.execute("REVOKE INSERT ON usage.events FROM ingest")
+        conn.commit()
+    resp = await client.post("/v1/ingest", json=body([ev()]), headers=bearer(token))
+    assert resp.status_code == 503
+    assert resp.json() == {"detail": "database unavailable"}
+
+
+async def test_ingest_missing_table_is_503(make_client, usage_db):
+    client = await make_client()
+    token, _ = mint(usage_db)
+    with psycopg.connect(usage_db) as conn:
+        conn.execute("DROP TABLE usage.events")
+        conn.commit()
+    resp = await client.post("/v1/ingest", json=body([ev()]), headers=bearer(token))
+    assert resp.status_code == 503
+
+
+async def test_touch_failure_after_commit_does_not_fail_response(
+    make_client, usage_db, monkeypatch
+):
+    client = await make_client()
+    token, _ = mint(usage_db)
+
+    def boom(app, token_id):
+        raise psycopg.errors.InsufficientPrivilege("nope")
+
+    monkeypatch.setattr("ingest_api.app._touch_throttled", boom)
+    resp = await client.post("/v1/ingest", json=body([ev()]), headers=bearer(token))
+    assert resp.status_code == 200
+    assert count(usage_db) == 1
