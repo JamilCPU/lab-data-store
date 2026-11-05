@@ -47,6 +47,8 @@ ROLE_PASSWORDS = {
     "BANK_READER_PASSWORD": "pw-bank-reader",
     "EMAIL_OWNER_PASSWORD": "pw-email-owner",
     "EMAIL_READER_PASSWORD": "pw-email-reader",
+    "SMS_OWNER_PASSWORD": "pw-" + "sms-owner",
+    "SMS_READER_PASSWORD": "pw-" + "sms-reader",
 }
 EXAMPLE_SOURCES = Path(__file__).parent.parent / "config" / "sources.example.yaml"
 USAGE_EVENTS_SQL = Path(__file__).parent / "fixtures" / "usage_events.sql"
@@ -55,10 +57,12 @@ USAGE_EVENTS_SQL = Path(__file__).parent / "fixtures" / "usage_events.sql"
 @pytest.fixture
 def usage_db(test_dsn):
     """Throwaway database with roles provisioned and the usage.events table created."""
-    ensure_roles(test_dsn, load_sources(EXAMPLE_SOURCES), ROLE_PASSWORDS)
+    sources = load_sources(EXAMPLE_SOURCES)
+    ensure_roles(test_dsn, sources, ROLE_PASSWORDS)
     owner_dsn = make_conninfo(test_dsn, user="usage_owner", password="pw-usage-owner")
     with psycopg.connect(owner_dsn) as conn:
         conn.execute(USAGE_EVENTS_SQL.read_text(encoding="utf-8"))
+    ensure_roles(test_dsn, sources, ROLE_PASSWORDS)  # grants on the table that now exists
     return test_dsn
 
 
@@ -71,10 +75,9 @@ def app_settings(usage_db, monkeypatch):
     def build(**overrides):
         ingest_dsn = make_conninfo(usage_db, user="ingest", password="pw-ingest")
         return Settings(
-            STORE_ADMIN_DSN=usage_db,
+            **{"STORE_ADMIN_DSN": usage_db, **overrides},
             STORE_INGEST_DSN=ingest_dsn,
             SOURCES_FILE=str(EXAMPLE_SOURCES),
-            **overrides,
         )
 
     return build

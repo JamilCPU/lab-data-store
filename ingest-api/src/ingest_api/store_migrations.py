@@ -30,12 +30,15 @@ _READER_STATEMENTS = (
 )
 
 # Only for sources with an ingest mapping; roles-only sources get no `ingest` access.
+# `ingest` may touch only the mapped table. Earlier versions granted every table, so the
+# broad grants are revoked first (idempotent) before the narrow one is applied.
 _INGEST_STATEMENTS = (
     "GRANT USAGE ON SCHEMA {schema} TO {ingest}",
     "ALTER DEFAULT PRIVILEGES FOR ROLE {owner} IN SCHEMA {schema} "
-    "GRANT SELECT, INSERT, UPDATE ON TABLES TO {ingest}",
-    "GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA {schema} TO {ingest}",
+    "REVOKE ALL ON TABLES FROM {ingest}",
+    "REVOKE ALL ON ALL TABLES IN SCHEMA {schema} FROM {ingest}",
 )
+_INGEST_TABLE_GRANT = "GRANT SELECT, INSERT, UPDATE ON {schema}.{table} TO {ingest}"
 
 # Serialises concurrent bootstraps (session-level advisory lock).
 _BOOTSTRAP_LOCK = 0x4C44534D
@@ -113,6 +116,21 @@ def _ensure_source(conn: psycopg.Connection, spec: SourceSpec) -> None:
     statements = _READER_STATEMENTS + (_INGEST_STATEMENTS if spec.ingestable else ())
     for stmt in statements:
         conn.execute(sql.SQL(stmt).format(**names))
+    if spec.ingestable:
+        qualified = sql.SQL(".").join([names["schema"], sql.Identifier(spec.table)])
+        # The table is created by the source owner's own migrations; grant once it exists
+        # (bootstrap re-runs on every pod start).
+        exists = conn.execute(
+            sql.SQL("SELECT to_regclass({})").format(sql.Literal(qualified.as_string(conn)))
+        ).fetchone()[0]
+        if exists is not None:
+            conn.execute(
+                sql.SQL(_INGEST_TABLE_GRANT).format(
+                    schema=names["schema"],
+                    table=sql.Identifier(spec.table),
+                    ingest=names["ingest"],
+                )
+            )
     conn.execute(
         "INSERT INTO store.sources (name, schema_name) VALUES (%s, %s) "
         "ON CONFLICT (name) DO UPDATE SET schema_name = EXCLUDED.schema_name",
@@ -141,6 +159,8 @@ def ensure_roles(
             _ensure_source(conn, spec)
         # The API runs as `ingest` and authenticates devices against the token table.
         conn.execute("GRANT USAGE ON SCHEMA store TO ingest")
-        conn.execute("GRANT SELECT ON store.device_tokens TO ingest")
+        # The API reads tokens; `store-admin token ...` manages them with the same DSN
+        # (the identity column needs no sequence grant).
+        conn.execute("GRANT SELECT, INSERT, UPDATE ON store.device_tokens TO ingest")
         conn.execute("GRANT UPDATE (last_seen_at) ON store.device_tokens TO ingest")
         conn.commit()

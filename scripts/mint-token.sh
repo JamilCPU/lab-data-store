@@ -18,5 +18,5 @@ for source in "$@"; do
   args+=(--source "$source")
 done
 
-exec kubectl -n "${NAMESPACE:-lab}" exec deploy/ingest-api -- \
+exec kubectl -n "${NAMESPACE:-lab}" exec deploy/ingest-api -c ingest-api -- \
   store-admin token create --device "$device" "${args[@]}"
