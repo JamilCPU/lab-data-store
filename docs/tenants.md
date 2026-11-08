@@ -22,6 +22,8 @@ A tenant is a data source that keeps its data in the lab data store: usage event
 2. **Track them in `<schema>.schema_migrations`** (`version text primary key`, `applied_at timestamptz not null default now()`). The tenant's migration runner creates it if missing.
 3. **Every ingested table has `received_at timestamptz not null default now()`.** The ingest API does not set it; the database does.
 4. **Ingested tables should be idempotent**: declare a `conflict_key` that matches a unique index so a client retrying a batch never duplicates rows.
+
+   If the same logical record can legitimately arrive with a different value in one of the `conflict_key` columns (for example a start timestamp that an upstream query trimmed), add an optional `identity_key`: a non-empty subset of `conflict_key` naming the record. Before each upsert the writer deletes rows with the same `identity_key` values but a different `conflict_key` in the same transaction, so a record keeps exactly one row (the newest copy wins; within a batch the last copy wins). The response reports the deleted count as `replaced`, and the bootstrap grants `DELETE` on the table to `ingest` only for sources that set `identity_key`.
 5. **Files go under `files/<source>/` in the files area** (see below), never in the database as blobs.
 6. **Backups are automatic.** The nightly job dumps the whole database, all roles and the whole files area. Nothing to configure per tenant.
 

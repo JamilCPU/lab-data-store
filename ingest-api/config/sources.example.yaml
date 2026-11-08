@@ -16,6 +16,7 @@ sources:
       source_event_id: bigint
     required: [device, ts_start, ts_end, kind, source_bucket, source_event_id]
     conflict_key: [device, source_bucket, source_event_id, ts_start]
+    identity_key: [device, source_bucket, source_event_id]
     on_conflict: update
     enum:
       kind: [window, web, afk]

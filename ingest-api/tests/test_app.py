@@ -150,7 +150,7 @@ async def test_ingest_accepts_batch_sets_received_at(make_client, usage_db):
     token, token_id = mint(usage_db)
     resp = await client.post("/v1/ingest", json=body([ev(1), ev(2)]), headers=bearer(token))
     assert resp.status_code == 200
-    assert resp.json() == {"accepted": 2, "inserted": 2, "updated": 0}
+    assert resp.json() == {"accepted": 2, "inserted": 2, "updated": 0, "replaced": 0}
     with psycopg.connect(usage_db) as conn:
         total, stamped = conn.execute(
             "SELECT count(*), count(received_at) FROM usage.events"
@@ -161,7 +161,7 @@ async def test_ingest_accepts_batch_sets_received_at(make_client, usage_db):
         ).fetchone()
         assert seen[0] is not None
     again = await client.post("/v1/ingest", json=body([ev(1), ev(2)]), headers=bearer(token))
-    assert again.json() == {"accepted": 2, "inserted": 0, "updated": 0}
+    assert again.json() == {"accepted": 2, "inserted": 0, "updated": 0, "replaced": 0}
 
 
 async def test_ingest_rate_limited(make_client, usage_db):
@@ -224,7 +224,7 @@ async def test_ingest_resend_with_longer_end_updates_one_row(make_client, usage_
     resp = await client.post(
         "/v1/ingest", json=body([ev(1, ts_end=later, title="b")]), headers=bearer(token)
     )
-    assert resp.json() == {"accepted": 1, "inserted": 0, "updated": 1}
+    assert resp.json() == {"accepted": 1, "inserted": 0, "updated": 1, "replaced": 0}
     assert count(usage_db) == 1
     with psycopg.connect(usage_db) as conn:
         title, end = conn.execute("SELECT title, ts_end FROM usage.events").fetchone()

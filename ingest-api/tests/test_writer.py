@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import psycopg
@@ -38,7 +39,7 @@ def rows(conn):
 def test_write_inserts_then_updates_on_conflict(usage_db, spec):
     with psycopg.connect(usage_db) as conn:
         first = write_events(conn, spec, [event()])
-        assert (first.inserted, first.updated) == (1, 0)
+        assert (first.inserted, first.updated, first.replaced) == (1, 0, 0)
         second = write_events(conn, spec, [event(ts_end=T2)])
         assert (second.inserted, second.updated) == (0, 1)
         assert rows(conn) == [(T2, False, None)]  # omitted idle uses the column default
@@ -77,3 +78,61 @@ def test_write_is_atomic_across_chunks(usage_db, spec):
             write_events(conn, spec, batch)
         conn.rollback()
         assert conn.execute("SELECT count(*) FROM usage.events").fetchone()[0] == 0
+
+
+def all_rows(conn):
+    return conn.execute(
+        "SELECT source_event_id, ts_start, ts_end FROM usage.events ORDER BY source_event_id"
+    ).fetchall()
+
+
+@pytest.mark.integration
+def test_identity_key_replaces_same_event_with_different_ts_start(usage_db, spec):
+    later = datetime(2026, 1, 1, 10, 2, tzinfo=UTC)
+    with psycopg.connect(usage_db) as conn:
+        write_events(conn, spec, [event(source_event_id=1), event(source_event_id=2)])
+        res = write_events(conn, spec, [event(source_event_id=1, ts_start=later, ts_end=T2)])
+        assert (res.inserted, res.updated, res.replaced) == (1, 0, 1)
+        assert all_rows(conn) == [(1, later, T2), (2, T0, T1)]  # id 2 untouched
+
+
+@pytest.mark.integration
+def test_identity_key_is_scoped_to_device_and_bucket(usage_db, spec):
+    later = datetime(2026, 1, 1, 10, 2, tzinfo=UTC)
+    with psycopg.connect(usage_db) as conn:
+        write_events(conn, spec, [event(), event(device="pc2"), event(source_bucket="b2")])
+        res = write_events(conn, spec, [event(ts_start=later)])
+        assert res.replaced == 1
+        assert conn.execute("SELECT count(*) FROM usage.events").fetchone()[0] == 3
+
+
+@pytest.mark.integration
+def test_identity_key_collapses_one_batch_to_last_copy(usage_db, spec):
+    later = datetime(2026, 1, 1, 10, 2, tzinfo=UTC)
+    with psycopg.connect(usage_db) as conn:
+        res = write_events(conn, spec, [event(), event(ts_start=later, ts_end=T2)])
+        assert (res.inserted, res.replaced) == (1, 0)
+        assert all_rows(conn) == [(1, later, T2)]
+
+
+@pytest.mark.integration
+def test_identity_key_replacement_spans_chunks(usage_db, spec):
+    later = datetime(2026, 1, 1, 10, 2, tzinfo=UTC)
+    with psycopg.connect(usage_db) as conn:
+        write_events(conn, spec, [event(source_event_id=i) for i in range(700)])
+        res = write_events(
+            conn, spec, [event(source_event_id=i, ts_start=later) for i in range(700)]
+        )
+        assert (res.inserted, res.replaced) == (700, 700)
+        assert conn.execute("SELECT count(*) FROM usage.events").fetchone()[0] == 700
+
+
+@pytest.mark.integration
+def test_without_identity_key_behaves_as_before(usage_db, spec):
+    plain = replace(spec, identity_key=())
+    later = datetime(2026, 1, 1, 10, 2, tzinfo=UTC)
+    with psycopg.connect(usage_db) as conn:
+        write_events(conn, plain, [event()])
+        res = write_events(conn, plain, [event(ts_start=later)])
+        assert (res.inserted, res.replaced) == (1, 0)
+        assert conn.execute("SELECT count(*) FROM usage.events").fetchone()[0] == 2

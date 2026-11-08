@@ -39,6 +39,8 @@ _INGEST_STATEMENTS = (
     "REVOKE ALL ON ALL TABLES IN SCHEMA {schema} FROM {ingest}",
 )
 _INGEST_TABLE_GRANT = "GRANT SELECT, INSERT, UPDATE ON {schema}.{table} TO {ingest}"
+# Only sources with an identity_key replace superseded rows, which needs DELETE.
+_INGEST_DELETE_GRANT = "GRANT DELETE ON {schema}.{table} TO {ingest}"
 
 # Serialises concurrent bootstraps (session-level advisory lock).
 _BOOTSTRAP_LOCK = 0x4C44534D
@@ -124,13 +126,17 @@ def _ensure_source(conn: psycopg.Connection, spec: SourceSpec) -> None:
             sql.SQL("SELECT to_regclass({})").format(sql.Literal(qualified.as_string(conn)))
         ).fetchone()[0]
         if exists is not None:
-            conn.execute(
-                sql.SQL(_INGEST_TABLE_GRANT).format(
-                    schema=names["schema"],
-                    table=sql.Identifier(spec.table),
-                    ingest=names["ingest"],
+            grants = [_INGEST_TABLE_GRANT]
+            if spec.identity_key:
+                grants.append(_INGEST_DELETE_GRANT)
+            for grant in grants:
+                conn.execute(
+                    sql.SQL(grant).format(
+                        schema=names["schema"],
+                        table=sql.Identifier(spec.table),
+                        ingest=names["ingest"],
+                    )
                 )
-            )
     conn.execute(
         "INSERT INTO store.sources (name, schema_name) VALUES (%s, %s) "
         "ON CONFLICT (name) DO UPDATE SET schema_name = EXCLUDED.schema_name",

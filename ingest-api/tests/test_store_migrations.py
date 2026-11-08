@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 
 import psycopg
@@ -154,3 +155,21 @@ def test_ingest_can_manage_device_tokens(test_dsn):
         )
         conn.commit()
         assert conn.execute("SELECT count(*) FROM store.device_tokens").fetchone() == (1,)
+
+
+@pytest.mark.integration
+def test_ingest_may_delete_only_on_identity_key_tables(test_dsn):
+    sources = load_sources(EXAMPLE)
+    ensure_roles(test_dsn, sources, PASSWORDS)
+    with as_role(test_dsn, "usage_owner", PASSWORDS["USAGE_OWNER_PASSWORD"]) as conn:
+        conn.execute("CREATE TABLE usage.events (id int primary key)")
+        conn.commit()
+    ensure_roles(test_dsn, sources, PASSWORDS)
+    with as_role(test_dsn, "ingest", PASSWORDS["INGEST_PASSWORD"]) as conn:
+        conn.execute("DELETE FROM usage.events WHERE id = 1")
+        conn.commit()
+    plain = {"usage": replace(sources["usage"], identity_key=())}
+    ensure_roles(test_dsn, plain, PASSWORDS)
+    with as_role(test_dsn, "ingest", PASSWORDS["INGEST_PASSWORD"]) as conn:
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            conn.execute("DELETE FROM usage.events WHERE id = 1")

@@ -33,6 +33,7 @@ class SourceSpec:
     columns: dict[str, ColumnType] = field(default_factory=dict)
     required: tuple[str, ...] = ()
     conflict_key: tuple[str, ...] = ()
+    identity_key: tuple[str, ...] = ()
     on_conflict: Literal["update", "nothing"] = "update"
     enum: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
@@ -49,6 +50,7 @@ class _SourceModel(BaseModel):
     columns: dict[str, ColumnType] = {}
     required: list[str] = []
     conflict_key: list[str] = []
+    identity_key: list[str] | None = None
     on_conflict: Literal["update", "nothing"] = "update"
     enum: dict[str, list[str]] = {}
 
@@ -76,6 +78,8 @@ def _build_spec(name: str, raw: dict[str, Any]) -> SourceSpec:
     if model.table is None:
         if model.columns or model.required or model.conflict_key or model.enum:
             raise SourceConfigError(f"source '{name}': ingest mapping requires 'table'")
+        if model.identity_key is not None:
+            raise SourceConfigError(f"source '{name}': ingest mapping requires 'table'")
         return SourceSpec(name=name, schema=model.schema_)
     for label, names in (
         ("required", model.required),
@@ -92,6 +96,14 @@ def _build_spec(name: str, raw: dict[str, Any]) -> SourceSpec:
         raise SourceConfigError(
             f"source '{name}': conflict_key column(s) {outside} must also be required"
         )
+    identity = model.identity_key
+    if identity is not None:
+        bad = [c for c in identity if c not in model.conflict_key]
+        if not identity or bad or len(set(identity)) != len(identity):
+            raise SourceConfigError(
+                f"source '{name}': identity_key must be a non-empty list of distinct "
+                f"conflict_key columns (offending: {bad})"
+            )
     non_text = [c for c in model.enum if model.columns[c] != "text"]
     if non_text:
         raise SourceConfigError(f"source '{name}': enum only allowed on text columns {non_text}")
@@ -102,6 +114,7 @@ def _build_spec(name: str, raw: dict[str, Any]) -> SourceSpec:
         columns=dict(model.columns),
         required=tuple(model.required),
         conflict_key=tuple(model.conflict_key),
+        identity_key=tuple(identity or ()),
         on_conflict=model.on_conflict,
         enum={k: tuple(v) for k, v in model.enum.items()},
     )
