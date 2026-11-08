@@ -129,3 +129,28 @@ SQLite is one file, one writer, no network — that's why data is scattered toda
 - Retention: keep raw events forever (default) or roll up after a year?
 - Should the primary node (headless) be tracked at all? Default: yes, as a device, even if it's mostly terminal sessions.
 - the phone browser capture: Chrome on Android has no extension support; default is foreground-app only on the phone unless he uses a browser that supports extensions.
+
+## 13. Outcome (2026-11-07)
+
+Built and deployed between 2026-11-04 and 2026-11-07; build order §9 followed.
+
+**Delivered**
+- Store: Postgres 17 + TimescaleDB 2.17 as a StatefulSet pinned to the primary node by label, hostPath data, one schema per source with `<source>_owner` / `<source>_reader` roles and a shared `ingest` writer. Roles-only tenants (`bank`, `email`, `sms`) are provisioned for the private-data-layer project.
+- Ingest API at `ingest.lab` (cert-manager, lab CA): generic envelope, per-device revocable tokens (hashed at rest), per-event device binding, idempotent upsert, and one row per source event (`identity_key`). Admin credentials live only in a bootstrap init container.
+- Backups: nightly `pg_dump` + globals + files tar to the node's other disk (14 days), a weekly pull to another machine, and a rehearsed restore (`scripts/restore-check.sh`).
+- Usage tracking (repo `usage-tracker`): ActivityWatch watchers plus a stdlib-only sync shim on the Linux desktop and the GPU PC, a pull-instance for the phone, and the viewer at `usage.lab` (device / date / hour / app / domain filters, hourly chart with idle subtracted, top apps and sites, daily totals, device compare) behind the MCP gateway's OAuth login. Seven months of the previous logger's history were imported once; the old logger was retired after a side-by-side day whose totals agreed within a few percent.
+
+**Deviations from this design**
+- Local PV → hostPath under `/data/lab/lab-data-store` (the cluster's established pattern).
+- Stateless workloads carry a node anti-affinity for the gateway/audio Pi; they otherwise float.
+- The GPU PC cannot resolve `*.lab` (router DNS) and does not trust the lab CA system-wide, so the shim connects by address with Host/SNI/certificate checks on the real name and pins the lab CA from its own config folder.
+- `usage.events` is kept raw (no roll-ups, no compression) as the default in §12 says.
+
+**Found along the way**
+- The ActivityWatch server trims events to the query window; straddling events must be re-fetched by id, and the store enforces one row per source event.
+- The Windows lock screen is reported as an app; lock-screen and logon processes count as idle.
+- Installers run from a packaged (MSIX) terminal see new folders under `%LOCALAPPDATA%` redirected to private storage; the Windows installer creates its config folder from outside that context.
+
+**Still open**
+- The phone (`aw-android` reachability and a stable address) and the browser extension for website capture are user actions.
+- Network request log, ClickHouse and pgvector remain later tenants, as §4 and §2 say.

@@ -28,6 +28,8 @@ A centralized home for personal data in a home lab: one Postgres + TimescaleDB i
 
 Deployment is GitOps: Flux applies the manifests in the `lab-gitops` repo (`apps/lab-data-store/`). This repo builds the image and holds the runbooks.
 
+**Status (2026-11-07):** live. Two usage clients ship events (a Linux desktop and a Windows PC), the viewer at `usage.lab` reads them, nightly backups run and a restore has been rehearsed. The design note with its outcome section is in [docs/superpowers/specs/](docs/superpowers/specs/2026-11-04-lab-data-store-and-usage-tracking-design.md).
+
 ## Repo layout
 
 | Path | Contents |
