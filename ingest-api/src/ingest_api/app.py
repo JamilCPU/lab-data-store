@@ -165,6 +165,7 @@ def create_app(settings: Settings) -> FastAPI:
             "accepted": len(events),
             "inserted": result.inserted,
             "updated": result.updated,
+            "replaced": result.replaced,
         }
 
     return app

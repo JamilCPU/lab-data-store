@@ -34,6 +34,7 @@ def make_event(**overrides):
 def test_load_example_sources_has_usage(usage):
     assert usage.name == "usage"
     assert usage.conflict_key == ("device", "source_bucket", "source_event_id", "ts_start")
+    assert usage.identity_key == ("device", "source_bucket", "source_event_id")
     assert usage.on_conflict == "update"
     assert usage.enum["kind"] == ("window", "web", "afk")
 
@@ -129,4 +130,33 @@ def test_enum_only_on_text_columns(tmp_path):
         "    enum: {n: ['1']}\n"
     )
     with pytest.raises(SourceConfigError, match="enum"):
+        load_sources(_write(tmp_path, body))
+
+
+def _identity_body(identity):
+    return (
+        "sources:\n  s:\n    schema: s\n    table: t\n"
+        "    columns: {a: text, b: text}\n    required: [a, b]\n    conflict_key: [a, b]\n"
+        f"    identity_key: {identity}\n"
+    )
+
+
+def test_identity_key_loads_as_tuple(tmp_path):
+    assert load_sources(_write(tmp_path, _identity_body("[a]")))["s"].identity_key == ("a",)
+
+
+def test_identity_key_defaults_empty(tmp_path):
+    body = _identity_body("[a]").replace("    identity_key: [a]\n", "")
+    assert load_sources(_write(tmp_path, body))["s"].identity_key == ()
+
+
+@pytest.mark.parametrize("identity", ["[c]", "[a, a]", "[]"])
+def test_identity_key_must_be_nonempty_unique_subset_of_conflict_key(tmp_path, identity):
+    with pytest.raises(SourceConfigError, match="identity_key"):
+        load_sources(_write(tmp_path, _identity_body(identity)))
+
+
+def test_identity_key_requires_table(tmp_path):
+    body = "sources:\n  s:\n    schema: s\n    identity_key: [a]\n"
+    with pytest.raises(SourceConfigError, match="requires 'table'"):
         load_sources(_write(tmp_path, body))
